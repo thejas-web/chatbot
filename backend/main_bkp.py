@@ -25,8 +25,9 @@ vector_db_manager.load_vector_store()
 
 
 vector_db_manager.add_documents(chunked_docs, embedded_docs)
+print("Ingestion completed successfully.")
 
-
+'''
 retriever = RagRetriever(vector_db_manager, embedding_manager)
 
 retrieved_docs = retriever.retrieve("Where is Webenza headquartered?", top_k=5, score_threshold=0.5)
@@ -36,3 +37,4 @@ retrieved_docs = retriever.retrieve("Where is Webenza headquartered?", top_k=5, 
 response = print_results(retrieved_docs, "Where is Webenza headquartered?")
 
 print(response)
+'''
