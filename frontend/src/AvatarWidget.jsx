@@ -105,6 +105,11 @@ function AvatarWidget() {
             simliClient.on("start", () => {
                 console.log("SIMLI STARTED");
                 setStatus("connected");
+
+                // Greet the user as soon as the avatar is ready.
+                speakAnswer(
+                    "Hi there! I'm your AI assistant. How can I help you today?"
+                );
             });
 
             simliClient.on("stop", () => {
