@@ -4,16 +4,18 @@ import tempfile
 
 from fastapi import APIRouter, UploadFile, File, HTTPException
 
-from backend.services.whisper_stt import WhisperSTT
-
+#from backend.services.whisper_stt import WhisperSTT
+from backend.services.groq_stt import GroqSTT
 
 router = APIRouter()
 
 
 # Load Whisper once when this module is imported.
 # We DON'T want to load the model for every request.
-whisper = WhisperSTT()
+#whisper = WhisperSTT()
 
+
+groq_stt = GroqSTT()
 
 @router.post("/stt")
 async def speech_to_text(
@@ -61,7 +63,7 @@ async def speech_to_text(
         # WHISPER TRANSCRIPTION
         # -----------------------------------------
 
-        text = whisper.transcribe(
+        text = groq_stt.transcribe(
             temp_path
         )
 
