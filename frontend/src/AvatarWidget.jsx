@@ -1554,6 +1554,7 @@ function AvatarWidget() {
 
                     )}
 
+                    {/*
                     {transcript && (
 
                         <div
@@ -1581,6 +1582,7 @@ function AvatarWidget() {
                         </div>
 
                     )}
+                    */}
 
                 </div>
 
@@ -1642,6 +1644,7 @@ function AvatarWidget() {
 
                 {/* CHAT ANSWER */}
 
+                {/*
                 {chatAnswer && (
 
                     <div
@@ -1668,7 +1671,7 @@ function AvatarWidget() {
 
                     </div>
 
-                )}
+                )}*/}
 
                 {/* ERROR */}
 
