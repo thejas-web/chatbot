@@ -1,24 +1,3 @@
-'''import json
-from pathlib import Path
-from langchain_core.documents import Document
-
-def load_pages_as_documents(combined_json_path: str) -> list[Document]:
-    data = json.loads(Path(combined_json_path).read_text(encoding="utf-8"))
-    documents = []
-    for page in data:
-        if page["char_count"] < 100:
-            continue  # skip thin/empty pages
-        doc = Document(
-            page_content=page["text"],
-            metadata={
-                "source": page["url"],
-                "title": page["title"],
-            },
-        )
-        documents.append(doc)
-    print(f"Loaded Documents: {len(documents)} \n {documents}")
-    return documents
-'''
 """
 Step 1: Content ingestion for RAG pipeline.
 
@@ -37,7 +16,6 @@ from urllib.parse import urlparse
 from urllib.robotparser import RobotFileParser
 from backend.config import SITE_ROOT, SITEMAP_URL, ROBOTS_URL, OUTPUT_DIR, ALL_PAGES_JSON
 import requests
-import trafilatura
 from bs4 import BeautifulSoup
 
 REQUEST_DELAY_SECONDS = 1.0  # be polite, don't hammer the server
@@ -49,13 +27,39 @@ SKIP_PATTERNS = [
     r"/privacy-policy/",
 ]
 
-# Backup selector list — only used if trafilatura fails to extract anything
-# (rare, but happens on very short or unusually structured pages).
-REMOVE_SELECTORS = [
-    "header", "nav", "footer", "script", "style", "noscript",
-    "form", "aside", ".cookie-banner", ".related-posts", ".comments",
-]
+# CSS selectors to remove before extracting text — nav, footer, forms, etc.
+# Inspect your site's actual HTML and adjust these to match your theme.
 
+
+#REMOVE_SELECTORS = [
+#    "header", "nav", "footer", "script", "style", "noscript",
+#    "form", "aside", ".cookie-banner", ".related-posts", ".comments",
+#]
+
+
+REMOVE_SELECTORS = [
+    "header",
+    "nav",
+    "footer",
+    "script",
+    "style",
+    "noscript",
+    "form",
+    "aside",
+    "iframe",
+
+    # Webenza global footer
+    "#footer-sec-webenza",
+    "#privacy-policy-footer-webenza",
+
+    # Webenza Specialisation section
+    "section.footer-what",
+
+    # Other common noise
+    ".cookie-banner",
+    ".related-posts",
+    ".comments",
+]
 
 def get_sitemap_urls(sitemap_url: str) -> list[str]:
     """Fetch and parse a sitemap.xml. Handles both a plain urlset and a
@@ -92,32 +96,14 @@ def should_skip(url: str, robots: RobotFileParser) -> bool:
 
 
 def extract_clean_text(html: str) -> tuple[str, str]:
-    """Returns (title, clean_body_text).
+    """Returns (title, clean_body_text)."""
+    soup = BeautifulSoup(html, "lxml")
 
-    Uses trafilatura for content extraction — it identifies the "main
-    content" of a page using text-density heuristics rather than relying on
-    semantic tags (<main>/<article>) or a hand-maintained selector list, so
-    it holds up across templates that don't mark up content consistently
-    (e.g. this site, which wraps everything in generic <div class="..."> soup
-    with no <main>/<article> landmark).
-    """
-    title_tag = BeautifulSoup(html, "lxml").find("title")
+    title_tag = soup.find("title")
     title = title_tag.get_text(strip=True) if title_tag else ""
 
-    text = trafilatura.extract(
-        html,
-        include_comments=False,
-        include_tables=True,
-        no_fallback=False,  # let trafilatura use its own fallback extractor too
-    )
-
-    if text:
-        return title, text.strip()
-
-    # Fallback: trafilatura found nothing (can happen on very short or
-    # oddly-structured pages) — fall back to the old selector-stripping
-    # approach so the page isn't silently dropped.
-    soup = BeautifulSoup(html, "lxml")
+    # Prefer a <main> or <article> tag if the theme has one — usually the
+    # cleanest signal for "this is the actual content". Fall back to <body>.
     main = soup.find("main") or soup.find("article") or soup.find("body")
     if main is None:
         return title, ""
@@ -126,6 +112,7 @@ def extract_clean_text(html: str) -> tuple[str, str]:
         for tag in main.select(selector):
             tag.decompose()
 
+    # Collapse whitespace, keep paragraph breaks
     text = main.get_text(separator="\n", strip=True)
     text = re.sub(r"\n{3,}", "\n\n", text)
     return title, text
