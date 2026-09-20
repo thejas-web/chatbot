@@ -1,6 +1,6 @@
 import { useRef, useState } from "react";
 import { SimliClient, LogLevel } from "simli-client";
-
+const { MicVAD, utils } = window.vad;
 //const API_URL = "http://localhost:8000";
 const API_URL = "";
 
@@ -10,11 +10,13 @@ function AvatarWidget() {
     const simliClientRef = useRef(null);
 
     // --------------------------------------------------
-    // MEDIA RECORDER
+    // VOICE ACTIVITY DETECTION
     // --------------------------------------------------
 
-    const mediaRecorderRef = useRef(null);
-    const audioChunksRef = useRef([]);
+    const vadRef = useRef(null);
+    const vadStartingRef = useRef(false);
+    const conversationActiveRef = useRef(false);
+    const processingSpeechRef = useRef(false);
 
     // --------------------------------------------------
     // TTS AUDIO BUFFER / QUEUE
@@ -68,6 +70,179 @@ function AvatarWidget() {
 
     const [leadError, setLeadError] = useState("");
 
+
+    const initializeVAD = async () => {
+        if (vadRef.current || vadStartingRef.current) {
+            return;
+        }
+
+        try {
+            vadStartingRef.current = true;
+
+            console.log("Initializing VAD...");
+
+            const vad = await MicVAD.new({
+                model: "v6",
+                baseAssetPath: "https://cdn.jsdelivr.net/npm/@ricky0123/vad-web@0.0.31/dist/",
+                onnxWASMBasePath: "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.22.0/dist/",
+
+                startOnLoad: false,
+
+                redemptionMs: 500,
+                preSpeechPadMs: 800,
+                minSpeechMs: 400,
+
+                positiveSpeechThreshold: 0.3,
+                negativeSpeechThreshold: 0.25,
+
+                onSpeechStart: () => {
+                    if (
+                        !conversationActiveRef.current ||
+                        processingSpeechRef.current
+                    ) {
+                        return;
+                    }
+
+                    console.log("🎤 USER SPEECH START");
+
+                    setIsListening(true);
+                    setChatStatus("idle");
+                    setError("");
+                },
+
+                onSpeechEnd: async (audio) => {
+                    if (
+                        !conversationActiveRef.current ||
+                        processingSpeechRef.current
+                    ) {
+                        return;
+                    }
+
+                    processingSpeechRef.current = true;
+
+                    console.log("🛑 USER SPEECH END");
+
+                    setIsListening(false);
+
+                    try {
+                        const wavBuffer = utils.encodeWAV(audio);
+
+                        const audioBlob = new Blob(
+                            [wavBuffer],
+                            {
+                                type: "audio/wav",
+                            }
+                        );
+
+                        console.log(
+                            "VAD audio size:",
+                            audioBlob.size
+                        );
+
+                        await sendAudioToWhisper(audioBlob);
+
+                    } catch (err) {
+                        console.error(
+                            "VAD processing error:",
+                            err
+                        );
+
+                        setChatStatus("error");
+
+                        setError(
+                            err?.message ||
+                            "Failed to process your speech."
+                        );
+
+                    } finally {
+                        processingSpeechRef.current = false;
+                    }
+                },
+
+                onVADMisfire: () => {
+                    console.log("VAD misfire");
+                    setIsListening(false);
+                },
+            });
+
+            vadRef.current = vad;
+
+            console.log("VAD initialized.");
+
+        } catch (err) {
+
+            console.error(
+                "VAD initialization error:",
+                err
+            );
+
+            setError(
+                err?.message ||
+                "Failed to initialize microphone."
+            );
+
+        } finally {
+            vadStartingRef.current = false;
+        }
+    };
+
+
+    const startVAD = async () => {
+        if (!vadRef.current) {
+            await initializeVAD();
+        }
+
+        if (
+            !vadRef.current ||
+            !conversationActiveRef.current
+        ) {
+            return;
+        }
+
+        try {
+            console.log("Starting VAD...");
+
+            await vadRef.current.start();
+
+            console.log("VAD listening for speech.");
+
+        } catch (err) {
+            console.error(
+                "Failed to start VAD:",
+                err
+            );
+
+            setError(
+                err?.message ||
+                "Could not start microphone."
+            );
+        }
+    };
+
+
+    const stopVAD = async () => {
+
+        if (!vadRef.current) {
+            return;
+        }
+
+        try {
+            console.log("Stopping VAD...");
+
+            await vadRef.current.pause();
+
+            setIsListening(false);
+
+        } catch (err) {
+
+            console.error(
+                "Failed to stop VAD:",
+                err
+            );
+        }
+    };
+
+
     // --------------------------------------------------
     // START SIMLI AVATAR
     // --------------------------------------------------
@@ -102,26 +277,42 @@ function AvatarWidget() {
 
             simliClientRef.current = simliClient;
 
-            simliClient.on("start", () => {
+            simliClient.on("start", async () => {
                 console.log("SIMLI STARTED");
+
                 setStatus("connected");
 
-                // Greet the user as soon as the avatar is ready.
-                speakAnswer(
-                    "Hi there! I'm your AI assistant. How can I help you today?"
+                conversationActiveRef.current = true;
+
+                // Initialize VAD
+                await initializeVAD();
+
+                // Greet the user first
+                await speakAnswer(
+                    "Hello, and welcome to Webenza. I’m your AI assistant, here to help you learn more about our services, solutions, capabilities, and expertise. Feel free to ask me anything about Webenza or our offerings, and I’ll provide the information I have to help you. Whenever you’re ready, let’s get started."
                 );
             });
 
-            simliClient.on("stop", () => {
+            simliClient.on("stop", async () => {
                 console.log("SIMLI STOPPED");
+
+                conversationActiveRef.current = false;
+                processingSpeechRef.current = false;
+
+                await stopVAD();
+
+                setIsListening(false);
                 setStatus("idle");
             });
 
-            simliClient.on("error", (message) => {
+            simliClient.on("error", async (message) => {
                 console.error(
                     "SIMLI ERROR:",
                     message
                 );
+
+                conversationActiveRef.current = false;
+                await stopVAD();
 
                 setStatus("error");
 
@@ -132,11 +323,14 @@ function AvatarWidget() {
                 );
             });
 
-            simliClient.on("startup_error", (message) => {
+            simliClient.on("startup_error", async (message) => {
                 console.error(
                     "SIMLI STARTUP ERROR:",
                     message
                 );
+
+                conversationActiveRef.current = false;
+                await stopVAD();
 
                 setStatus("error");
 
@@ -206,9 +400,27 @@ function AvatarWidget() {
     // STOP SIMLI AVATAR
     // --------------------------------------------------
 
-    const stopAvatar = () => {
+    const stopAvatar = async () => {
         try {
+            conversationActiveRef.current = false;
+            processingSpeechRef.current = false;
+
+            // Invalidate any TTS request that is still running.
             ttsGenerationIdRef.current++;
+
+            // Stop microphone/VAD first.
+            await stopVAD();
+
+            // Destroy VAD so the microphone is released completely.
+            if (vadRef.current) {
+                try {
+                    await vadRef.current.destroy();
+                } catch (vadError) {
+                    console.warn("Could not destroy VAD:", vadError);
+                }
+
+                vadRef.current = null;
+            }
 
             if (simliClientRef.current) {
                 simliClientRef.current.stop();
@@ -217,25 +429,13 @@ function AvatarWidget() {
 
             resetTTSBuffer();
 
-            if (
-                mediaRecorderRef.current &&
-                mediaRecorderRef.current.state !== "inactive"
-            ) {
-                mediaRecorderRef.current.stop();
-            }
-
-            mediaRecorderRef.current = null;
-            audioChunksRef.current = [];
-
             setIsListening(false);
             setStatus("idle");
             setTtsStatus("idle");
+            setChatStatus("idle");
 
         } catch (err) {
-            console.error(
-                "Error stopping avatar:",
-                err
-            );
+            console.error("Error stopping avatar:", err);
         }
     };
 
@@ -319,25 +519,19 @@ function AvatarWidget() {
 
     const consumeTTSQueue = async () => {
 
-        if (
-            ttsConsumerRunningRef.current
-        ) {
+        if (ttsConsumerRunningRef.current) {
             return;
         }
 
-        ttsConsumerRunningRef.current =
-            true;
+        ttsConsumerRunningRef.current = true;
 
         console.log(
-            "TTS consumer started."
+            `[TTS CONSUMER START] ${performance.now().toFixed(1)} ms | queue=${ttsQueueRef.current.length}`
         );
 
         try {
 
-            while (
-                ttsQueueRef.current.length >
-                0
-            ) {
+            while (ttsQueueRef.current.length > 0) {
 
                 const audioFrame =
                     ttsQueueRef.current.shift();
@@ -349,15 +543,27 @@ function AvatarWidget() {
                     continue;
                 }
 
-                if (
-                    !simliClientRef.current
-                ) {
+                if (!simliClientRef.current) {
+
                     console.warn(
-                        "Simli disconnected. Stopping TTS consumer."
+                        `[TTS SIMLI DISCONNECTED] ${performance.now().toFixed(1)} ms`
                     );
 
                     break;
                 }
+
+                // How much audio is still waiting BEFORE sending this frame?
+                const queuedBefore =
+                    ttsQueueRef.current.length *
+                    PCM_FRAME_SIZE /
+                    (16000 * 2);
+
+                console.log(
+                    `[TTS FRAME] ${performance.now().toFixed(1)} ms | ` +
+                    `sending=${audioFrame.length} bytes | ` +
+                    `queue=${ttsQueueRef.current.length} frames | ` +
+                    `buffer=${queuedBefore.toFixed(3)} sec`
+                );
 
                 simliClientRef.current.sendAudioData(
                     audioFrame
@@ -380,19 +586,30 @@ function AvatarWidget() {
 
         } finally {
 
-            ttsConsumerRunningRef.current =
-                false;
+            ttsConsumerRunningRef.current = false;
 
+            // IMPORTANT: tell us if the consumer actually drained
             if (
-                ttsQueueRef.current.length >
-                0 &&
+                ttsQueueRef.current.length === 0
+            ) {
+
+                console.log(
+                    `[TTS QUEUE EMPTY] ${performance.now().toFixed(1)} ms`
+                );
+
+            } else if (
                 simliClientRef.current
             ) {
+
+                console.log(
+                    `[TTS CONSUMER RESTART] queue=${ttsQueueRef.current.length}`
+                );
+
                 consumeTTSQueue();
             }
 
             console.log(
-                "TTS consumer stopped."
+                `[TTS CONSUMER STOPPED] ${performance.now().toFixed(1)} ms`
             );
         }
     };
@@ -405,6 +622,9 @@ function AvatarWidget() {
 
         const generationId =
             ++ttsGenerationIdRef.current;
+
+        // Stop microphone/VAD while avatar speaks
+        await stopVAD();
 
         try {
 
@@ -674,6 +894,15 @@ function AvatarWidget() {
 
             setTtsStatus("received");
 
+            // Avatar finished speaking.
+            // Resume automatic listening.
+            if (
+                conversationActiveRef.current &&
+                generationId === ttsGenerationIdRef.current
+            ) {
+                await startVAD();
+            }
+
             return true;
 
         } catch (err) {
@@ -702,6 +931,12 @@ function AvatarWidget() {
                     err?.message ||
                     "Failed to make the avatar speak."
                 );
+            }
+
+            // If the conversation is still active, allow the user
+            // to speak again even after a TTS error.
+            if (conversationActiveRef.current) {
+                await startVAD();
             }
 
             return false;
@@ -1058,7 +1293,7 @@ function AvatarWidget() {
             formData.append(
                 "audio",
                 audioBlob,
-                "speech.webm"
+                "speech.wav"
             );
 
             const response = await fetch(
@@ -1126,186 +1361,6 @@ function AvatarWidget() {
         }
     };
 
-    // --------------------------------------------------
-    // START MICROPHONE RECORDING
-    // --------------------------------------------------
-
-    const startListening = async () => {
-
-        try {
-
-            setError("");
-            setTranscript("");
-            setChatAnswer("");
-
-            if (
-                status !== "connected"
-            ) {
-
-                setError(
-                    "Please start the avatar first."
-                );
-
-                return;
-            }
-
-            console.log(
-                "Requesting microphone..."
-            );
-
-            const stream =
-                await navigator.mediaDevices.getUserMedia({
-                    audio: true,
-                });
-
-            console.log(
-                "Microphone access granted"
-            );
-
-            const mediaRecorder =
-                new MediaRecorder(stream);
-
-            mediaRecorderRef.current =
-                mediaRecorder;
-
-            audioChunksRef.current = [];
-
-            mediaRecorder.ondataavailable = (
-                event
-            ) => {
-
-                if (
-                    event.data.size > 0
-                ) {
-
-                    audioChunksRef.current.push(
-                        event.data
-                    );
-                }
-            };
-
-            mediaRecorder.onstop = async () => {
-
-                console.log(
-                    "Recording stopped"
-                );
-
-                setIsListening(false);
-
-                stream
-                    .getTracks()
-                    .forEach(
-                        (track) =>
-                            track.stop()
-                    );
-
-                const audioBlob =
-                    new Blob(
-                        audioChunksRef.current,
-                        {
-                            type:
-                                mediaRecorder.mimeType ||
-                                "audio/webm",
-                        }
-                    );
-
-                console.log(
-                    "Recorded audio size:",
-                    audioBlob.size
-                );
-
-                if (
-                    audioBlob.size === 0
-                ) {
-
-                    setError(
-                        "No audio was recorded."
-                    );
-
-                    return;
-                }
-
-                await sendAudioToWhisper(
-                    audioBlob
-                );
-            };
-
-            mediaRecorder.onerror = (
-                event
-            ) => {
-
-                console.error(
-                    "MediaRecorder error:",
-                    event.error
-                );
-
-                setIsListening(false);
-
-                setError(
-                    "Microphone recording failed."
-                );
-            };
-
-            mediaRecorder.start();
-
-            console.log(
-                "Recording started"
-            );
-
-            setIsListening(true);
-            setChatStatus("idle");
-
-        } catch (err) {
-
-            console.error(
-                "Microphone error:",
-                err
-            );
-
-            setIsListening(false);
-
-            if (
-                err.name ===
-                "NotAllowedError"
-            ) {
-
-                setError(
-                    "Microphone permission was denied. Please allow microphone access."
-                );
-
-            } else {
-
-                setError(
-                    err?.message ||
-                    "Could not access microphone."
-                );
-            }
-        }
-    };
-
-    // --------------------------------------------------
-    // STOP MICROPHONE RECORDING
-    // --------------------------------------------------
-
-    const stopListening = () => {
-
-        if (
-            mediaRecorderRef.current &&
-            mediaRecorderRef.current.state !==
-                "inactive"
-        ) {
-
-            console.log(
-                "Stopping microphone recording..."
-            );
-
-            mediaRecorderRef.current.stop();
-
-        } else {
-
-            setIsListening(false);
-        }
-    };
 
     // --------------------------------------------------
     // STATUS TEXT
@@ -1519,40 +1574,6 @@ function AvatarWidget() {
                     }
                 >
 
-                    <button
-                        onClick={
-                            isListening
-                                ? stopListening
-                                : startListening
-                        }
-                        style={
-                            isListening
-                                ? styles.listeningButton
-                                : styles.micButton
-                        }
-                        disabled={
-                            status !==
-                            "connected"
-                        }
-                    >
-
-                        {isListening
-                            ? "🛑 Stop Listening"
-                            : "🎤 Speak"}
-
-                    </button>
-
-                    {isListening && (
-
-                        <p
-                            style={
-                                styles.listeningText
-                            }
-                        >
-                            Listening...
-                        </p>
-
-                    )}
 
                     {/*
                     {transcript && (
@@ -1588,59 +1609,14 @@ function AvatarWidget() {
 
                 {/* CHAT STATUS */}
 
-                {chatStatus ===
-                    "transcribing" && (
+               
 
-                    <p
-                        style={
-                            styles.thinkingText
-                        }
-                    >
-                        Transcribing...
-                    </p>
-
-                )}
-
-                {chatStatus ===
-                    "thinking" && (
-
-                    <p
-                        style={
-                            styles.thinkingText
-                        }
-                    >
-                        Thinking...
-                    </p>
-
-                )}
+                
 
                 {/* TTS STATUS */}
 
-                {ttsStatus ===
-                    "generating" && (
+               
 
-                    <p
-                        style={
-                            styles.speakingText
-                        }
-                    >
-                        🔊 Generating response...
-                    </p>
-
-                )}
-
-                {ttsStatus ===
-                    "received" && (
-
-                    <p
-                        style={
-                            styles.successText
-                        }
-                    >
-                        🔊 Assistant is speaking
-                    </p>
-
-                )}
 
                 {/* CHAT ANSWER */}
 
@@ -2085,27 +2061,6 @@ const styles = {
         textAlign: "center",
     },
 
-    micButton: {
-        border: "none",
-        borderRadius: "50px",
-        padding: "12px 26px",
-        background: "#ffffff",
-        color: "#111318",
-        fontSize: "14px",
-        fontWeight: 600,
-        cursor: "pointer",
-    },
-
-    listeningButton: {
-        border: "none",
-        borderRadius: "50px",
-        padding: "12px 26px",
-        background: "#ef4444",
-        color: "#ffffff",
-        fontSize: "14px",
-        fontWeight: 600,
-        cursor: "pointer",
-    },
 
     listeningText: {
         color: "#f59e0b",

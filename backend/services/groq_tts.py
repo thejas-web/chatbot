@@ -3,22 +3,21 @@ import re
 import time
 import wave
 
+from pathlib import Path
+
 import numpy as np
 from groq import Groq
 from scipy.signal import resample_poly
 
 from backend.config import groq_api_key
-
 def clean_text_for_tts(text: str) -> str:
+    if not text:
+        return ""
 
-    # Remove bold markdown
-    text = re.sub(
-        r"\*\*(.*?)\*\*",
-        r"\1",
-        text
-    )
+    # Remove bold Markdown
+    text = re.sub(r"\*\*(.*?)\*\*", r"\1", text)
 
-    # Remove italic markdown
+    # Remove italic Markdown
     text = re.sub(
         r"(?<!\*)\*([^*]+)\*(?!\*)",
         r"\1",
@@ -26,26 +25,25 @@ def clean_text_for_tts(text: str) -> str:
     )
 
     # Remove inline code
-    text = re.sub(
-        r"`([^`]*)`",
-        r"\1",
-        text
-    )
+    text = re.sub(r"`([^`]*)`", r"\1", text)
 
-    # Remove markdown links but keep visible text
+    # Remove Markdown links but preserve visible text
     text = re.sub(
         r"\[([^\]]+)\]\([^)]+\)",
         r"\1",
         text
     )
 
-    # Remove markdown headings
+    # Remove Markdown headings
     text = re.sub(
         r"^\s*#+\s*",
         "",
         text,
         flags=re.MULTILINE
     )
+
+    # Convert line breaks and repeated whitespace into spaces
+    text = re.sub(r"\s+", " ", text)
 
     return text.strip()
 
@@ -54,7 +52,7 @@ class GroqTTS:
     def __init__(
         self,
         model="canopylabs/orpheus-v1-english",
-        voice="hannah",
+        voice="autumn",
     ):
         print("Initializing Groq TTS...")
 
@@ -74,128 +72,99 @@ class GroqTTS:
     def split_text(
         self,
         text: str,
-        max_chars: int = 180
-    ):
+        max_chars: int = 220,
+        min_chars: int = 80,
+    ) -> list[str]:
 
-        text = text.strip()
+        text = re.sub(r"\s+", " ", text).strip()
 
         if not text:
             return []
-
-        # ----------------------------------------------
-        # FIRST SPLIT AT SENTENCE BOUNDARIES
-        # ----------------------------------------------
 
         sentences = re.split(
             r"(?<=[.!?])\s+",
             text
         )
 
+        # First combine normal sentences.
         chunks = []
-        current = ""
+        current_chunk = ""
 
         for sentence in sentences:
-
             sentence = sentence.strip()
 
             if not sentence:
                 continue
 
-            # ------------------------------------------
-            # SENTENCE FITS WITHIN LIMIT
-            # ------------------------------------------
-
-            if len(sentence) <= max_chars:
-
-                if current:
-
-                    candidate = (
-                        current
-                        + " "
-                        + sentence
-                    )
-
-                else:
-
-                    candidate = sentence
-
-                if len(candidate) <= max_chars:
-
-                    current = candidate
-
-                else:
-
-                    if current:
-                        chunks.append(current)
-
-                    current = sentence
-
-            # ------------------------------------------
-            # SENTENCE ITSELF IS TOO LONG
-            # ------------------------------------------
-
-            else:
-
-                if current:
-
-                    chunks.append(
-                        current
-                    )
-
-                    current = ""
+            # Handle a sentence longer than max_chars.
+            if len(sentence) > max_chars:
+                if current_chunk:
+                    chunks.append(current_chunk)
+                    current_chunk = ""
 
                 words = sentence.split()
-
                 word_chunk = ""
 
                 for word in words:
-
-                    if word_chunk:
-
-                        candidate = (
-                            word_chunk
-                            + " "
-                            + word
-                        )
-
-                    else:
-
-                        candidate = word
+                    candidate = f"{word_chunk} {word}".strip()
 
                     if len(candidate) <= max_chars:
-
                         word_chunk = candidate
-
                     else:
-
                         if word_chunk:
-
-                            chunks.append(
-                                word_chunk
-                            )
+                            chunks.append(word_chunk)
 
                         word_chunk = word
 
                 if word_chunk:
+                    chunks.append(word_chunk)
 
-                    current = word_chunk
+                continue
 
-        if current:
+            candidate = f"{current_chunk} {sentence}".strip()
 
-            chunks.append(
-                current
-            )
+            if len(candidate) <= max_chars:
+                current_chunk = candidate
+            else:
+                if current_chunk:
+                    chunks.append(current_chunk)
 
-        return chunks
+                current_chunk = sentence
+
+        if current_chunk:
+            chunks.append(current_chunk)
+
+        # Merge short chunks where possible.
+        merged_chunks = []
+        current_chunk = ""
+
+        for chunk in chunks:
+            if not current_chunk:
+                current_chunk = chunk
+                continue
+
+            candidate = f"{current_chunk} {chunk}".strip()
+
+            if (
+                len(current_chunk) < min_chars
+                and len(candidate) <= max_chars
+            ):
+                current_chunk = candidate
+            else:
+                merged_chunks.append(current_chunk)
+                current_chunk = chunk
+
+        if current_chunk:
+            merged_chunks.append(current_chunk)
+
+        return merged_chunks
+
 
     # ==================================================
     # GENERATE ONE TTS CHUNK
     # ==================================================
 
-    def _generate_chunk(
-        self,
-        text: str
-    ):
+    def _generate_chunk(self,text: str):
 
         print(
             f"Generating Groq TTS chunk "
@@ -207,11 +176,26 @@ class GroqTTS:
             voice=self.voice,
             input=text,
             response_format="wav",
-            speed=1.4,
+            speed=1.8,
 
         )
 
         wav_bytes = response.read()
+
+        from pathlib import Path
+
+        debug_original_path = (
+            Path(__file__).resolve().parent
+            / "debug"
+            / "debug_groq_original.wav"
+        )
+
+        debug_original_path.parent.mkdir(parents=True, exist_ok=True)
+        debug_original_path.write_bytes(wav_bytes)
+
+        print("[TTS DEBUG] Original Groq WAV saved to:")
+        print(debug_original_path)
+
 
         # ----------------------------------------------
         # READ WAV
@@ -338,6 +322,14 @@ class GroqTTS:
 
         pcm_bytes = pcm16.tobytes()
 
+
+        audio_duration = len(pcm_bytes) / (16000 * 2)
+
+        print(
+            f"Audio duration: "
+            f"{audio_duration:.3f}s"
+        )
+        
         print(
             f"Generated PCM: "
             f"{len(pcm_bytes)} bytes"
@@ -354,10 +346,7 @@ class GroqTTS:
     # of waiting for all chunks to finish.
     # ==================================================
 
-    def generate_chunks(
-        self,
-        text: str
-    ):
+    def generate_chunks(self,text: str):
         text = clean_text_for_tts(text)
 
         if not text:
@@ -371,7 +360,8 @@ class GroqTTS:
 
         chunks = self.split_text(
             text,
-            max_chars=180
+            max_chars=200,
+            min_chars=80
         )
 
         print()
@@ -388,6 +378,14 @@ class GroqTTS:
             f"TTS chunks: "
             f"{len(chunks)}"
         )
+
+        # ----------------------------------------------
+        # DEBUG:
+        # Collect the EXACT PCM that is being
+        # yielded to the HTTP stream / Simli
+        # ----------------------------------------------
+
+        all_pcm = bytearray()
 
         # ----------------------------------------------
         # GENERATE AND YIELD EACH CHUNK
@@ -428,20 +426,56 @@ class GroqTTS:
                 f"in {chunk_time:.3f}s"
             )
 
+            # ------------------------------------------
+            # DEBUG:
+            # Store the exact PCM
+            # ------------------------------------------
+
+            all_pcm.extend(pcm)
+
             print(
                 f"Yielding chunk {index} "
                 f"to HTTP stream..."
             )
 
-            # ------------------------------------------
-            # THIS IS THE IMPORTANT PART
-            #
-            # The chunk is sent immediately.
-            # We DON'T wait for the remaining
-            # chunks.
-            # ------------------------------------------
-
             yield pcm
+
+        # ----------------------------------------------
+        # DEBUG:
+        # Save complete PCM as WAV
+        # ----------------------------------------------
+
+        debug_path = (
+            Path(__file__).resolve().parent
+            / "debug"
+            / "debug_tts.wav"
+        )
+
+        debug_path.parent.mkdir(
+            parents=True,
+            exist_ok=True
+        )
+
+        with wave.open(
+            str(debug_path),
+            "wb"
+        ) as wav_file:
+
+            wav_file.setnchannels(1)
+            wav_file.setsampwidth(2)
+            wav_file.setframerate(16000)
+            wav_file.writeframes(all_pcm)
+
+        print()
+        print(
+            f"[TTS DEBUG] WAV saved to:"
+        )
+
+        print(debug_path)
+
+        # ----------------------------------------------
+        # TOTAL TIME
+        # ----------------------------------------------
 
         total_time = (
             time.perf_counter()
@@ -455,6 +489,7 @@ class GroqTTS:
         )
 
         print("=" * 60)
+
 
     # ==================================================
     # OLD FULL GENERATION METHOD

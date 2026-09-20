@@ -28,5 +28,8 @@ VECTOR_STORE_DIR = str(BASE_DIR / "data" / "vector_store")
 
 groq_api_key = os.getenv("GROQ_API_KEY")
 
+elevenlabs_api_key = os.getenv("ELEVENLABS_API_KEY")
+cartesia_api_key = os.getenv("CARTESIA_API_KEY")
+
 SIMLI_API_KEY = os.getenv('SIMLI_API_KEY')
 SIMLI_FACE_ID = os.getenv('SIMLI_FACE_ID')

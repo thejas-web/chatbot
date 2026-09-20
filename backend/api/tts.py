@@ -4,6 +4,7 @@ from pydantic import BaseModel
 
 from backend.services.groq_tts import GroqTTS
 
+from backend.services.cartesia_tts import CartesiaTTS
 
 router = APIRouter()
 
@@ -12,9 +13,13 @@ router = APIRouter()
 # LOAD TTS ONCE
 # ==================================================
 
-tts = GroqTTS(
-    voice="hannah"
+#tts = GroqTTS(voice="hannah")
+
+tts = CartesiaTTS(
+    model="sonic-3.5",
+    voice_id="db6b0ed5-d5d3-463d-ae85-518a07d3c2b4",
 )
+
 
 
 class TTSRequest(BaseModel):
