@@ -27,6 +27,12 @@ export default defineConfig({
         }),
     ],
 
+    resolve: {
+        alias: {
+            "./Client": "./client",
+        },
+    },
+
     server: {
         proxy: {
             "/api": {
