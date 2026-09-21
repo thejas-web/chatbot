@@ -17,6 +17,8 @@ function AvatarWidget() {
     const vadStartingRef = useRef(false);
     const conversationActiveRef = useRef(false);
     const processingSpeechRef = useRef(false);
+    const avatarSpeakingRef = useRef(false);
+    const avatarPlaybackActiveRef = useRef(false);
 
     // --------------------------------------------------
     // TTS AUDIO BUFFER / QUEUE
@@ -98,7 +100,8 @@ function AvatarWidget() {
                 onSpeechStart: () => {
                     if (
                         !conversationActiveRef.current ||
-                        processingSpeechRef.current
+                        processingSpeechRef.current ||
+                        avatarSpeakingRef.current
                     ) {
                         return;
                     }
@@ -113,7 +116,8 @@ function AvatarWidget() {
                 onSpeechEnd: async (audio) => {
                     if (
                         !conversationActiveRef.current ||
-                        processingSpeechRef.current
+                        processingSpeechRef.current ||
+                        avatarSpeakingRef.current
                     ) {
                         return;
                     }
@@ -341,12 +345,33 @@ function AvatarWidget() {
                 );
             });
 
-            simliClient.on("speaking", () => {
+            simliClient.on("speaking", async () => {
                 console.log("SIMLI SPEAKING");
+
+                avatarSpeakingRef.current = true;
+
+                // Safety: VAD must not listen while avatar is speaking.
+                await stopVAD();
             });
 
-            simliClient.on("silent", () => {
+            simliClient.on("silent", async () => {
                 console.log("SIMLI SILENT");
+
+                // Ignore silent events that are not part of an active avatar playback.
+                if (!avatarPlaybackActiveRef.current) {
+                    return;
+                }
+
+                avatarPlaybackActiveRef.current = false;
+                avatarSpeakingRef.current = false;
+
+                if (
+                    conversationActiveRef.current &&
+                    !processingSpeechRef.current
+                ) {
+                    console.log("Simli finished speaking. Starting VAD...");
+                    await startVAD();
+                }
             });
 
             console.log("Starting Simli...");
@@ -405,8 +430,15 @@ function AvatarWidget() {
             conversationActiveRef.current = false;
             processingSpeechRef.current = false;
 
+
+             // Stop considering the avatar as speaking.
+            avatarSpeakingRef.current = false;
+            avatarPlaybackActiveRef.current = false;
+
+
             // Invalidate any TTS request that is still running.
             ttsGenerationIdRef.current++;
+
 
             // Stop microphone/VAD first.
             await stopVAD();
@@ -620,21 +652,20 @@ function AvatarWidget() {
 
     const speakAnswer = async (text) => {
 
+        if (!text || !text.trim()) {
+            return false;
+        }
+
         const generationId =
             ++ttsGenerationIdRef.current;
+        
+        avatarSpeakingRef.current = true;
+        avatarPlaybackActiveRef.current = true;
 
         // Stop microphone/VAD while avatar speaks
         await stopVAD();
 
         try {
-
-            if (
-                !text ||
-                !text.trim()
-            ) {
-                return;
-            }
-
             if (
                 !simliClientRef.current
             ) {
@@ -807,6 +838,7 @@ function AvatarWidget() {
                     ttsPlaybackStartedRef.current =
                         true;
 
+
                     setTtsStatus("received");
 
                     consumeTTSQueue();
@@ -894,14 +926,7 @@ function AvatarWidget() {
 
             setTtsStatus("received");
 
-            // Avatar finished speaking.
-            // Resume automatic listening.
-            if (
-                conversationActiveRef.current &&
-                generationId === ttsGenerationIdRef.current
-            ) {
-                await startVAD();
-            }
+
 
             return true;
 
@@ -932,6 +957,13 @@ function AvatarWidget() {
                     "Failed to make the avatar speak."
                 );
             }
+
+            // --------------------------------------------------
+            // RESET AVATAR STATE AFTER TTS ERROR
+            // --------------------------------------------------
+
+            avatarSpeakingRef.current = false;
+           
 
             // If the conversation is still active, allow the user
             // to speak again even after a TTS error.
